@@ -1,0 +1,224 @@
+# Comparing airlines using a tidied flight delay data set
+
+## Data 607 assignment
+
+### Heather Geiger ; February 28, 2018
+
+### Preface - Comparing different ways to tidy and transform data
+
+Inspired by this blog post (https://www.r-bloggers.com/how-to-reshape-data-in-r-tidyr-vs-reshape2/), where appropriate I will show how to perform the same operation using two different functions, either reshape2 or base R versus the tidyverse tidyr/dplyr.
+
+My main experience is using base R, with a bit of reshape2 for simple operations like switching between wide and long. Here I typically first looked into how to perform the function using my existing knowledge, before also searching for the equivalent in the tidyverse.
+
+### Load libraries.
+
+Load all libraries we will need.
+
+```{r}
+library(stringr)
+library(reshape2)
+library(tidyr)
+library(dplyr)
+library(ggplot2)
+library(scales)
+```
+
+### Initial processing
+
+Start by reading in the CSV file.
+
+This CSV file was created by putting the information into Excel exactly as it looked in the description, then converting this sheet to CSV.
+
+```{r, echo=TRUE,eval=TRUE}
+airlines <- read.csv("https://raw.githubusercontent.com/heathergeiger/Tidying_airlines_data/master/alaska_vs_am_west_airlines.csv",check.names=FALSE,stringsAsFactors=FALSE)
+airlines
+```
+
+Remove empty lines and make column headers more descriptive.
+
+```{r}
+airlines <- airlines[which(airlines[,2] == "on time" | airlines[,2] == "delayed"),]
+colnames(airlines)[1:2] <- c("Airline","Status")
+airlines
+```
+
+Right now some columns are going to be character that should be numeric, because numbers greater than 1,000 are written with a comma.
+
+Remove the commas using str_replace from the stringr package.
+
+Then apply as.numeric function to convert all the city columns to numeric.
+
+```{r, echo=TRUE,eval=TRUE}
+for(i in 3:ncol(airlines))
+{
+airlines[,i] <- str_replace(airlines[,i],pattern=",",replacement="")
+airlines[,i] <- as.numeric(airlines[,i])
+}
+
+airlines
+```
+
+Check the sum of one of the columns that formerly had a comma in number to be sure this worked.
+
+```{r}
+sum(airlines[,4])
+221 + 12 + 4840 + 415
+```
+
+Looks like removing the commas, then applying as.numeric, worked well.
+
+### Tidying data
+
+Before we can convert to long format, we need to repeat the value in Airline column that is there for on time, immediately after for delayed.
+
+```{r}
+airlines$Airline <- rep(airlines$Airline[which(airlines$Airline != "")],each=2)
+airlines
+```
+
+Now ready to convert to long format.
+
+One way to convert from wide to long format is using function melt from the reshape2 package.
+
+Another is using the gather function.
+
+```{r, echo=TRUE, eval=TRUE}
+melt_result <- melt(airlines,variable.name="City",value.name="Flights",id.vars=c("Airline","Status"))
+melt_result
+
+gather_result <- gather(airlines,City,Flights,-Airline,-Status)
+gather_result
+```
+
+These are identical. Since this assignment is supposed to be based on tidyverse, let's use the gather result.
+
+```{r}
+airlines <- gather_result
+```
+
+This is mostly what we want, except we really want two columns for on time vs. delayed for each instance of airline + city.
+
+For this, we could use either the spread function from tidyr or the dcast function from reshape2.
+
+One we show that they make the same result, reassign airlines to the result of spread.
+
+```{r}
+dcast_result <- dcast(airlines,formula = Airline + City ~ Status,value.var="Flights")
+dcast_result
+
+spread_result <- spread(airlines,Status,Flights)
+spread_result
+
+airlines <- spread_result
+```
+
+One last thing - change "on time" to "on.time" to be more R-friendly.
+
+```{r}
+colnames(airlines)[4] <- "on.time"
+```
+
+### Transforming data
+
+Now our data is pretty tidy, but we need to do some transformations to get anything meaningful.
+
+Mainly for each airline in each city, we'll want to get the rate of delays and the total number of flights.
+
+Add this information to airlines using either transform (base R) or mutate (dplyr).
+
+```{r}
+transform_result <-  transform(airlines,total.flights = on.time + delayed,delayed.rate = (delayed*100)/(on.time + delayed))
+transform_result
+
+mutate_result <- mutate(airlines,total.flights = on.time + delayed,delayed.rate = (delayed*100)/(on.time + delayed))
+mutate_result
+```
+
+In this case, the syntax and result are identical.
+
+However, the tidyverse can also be done via piping, which can be useful when we have more complex operations to perform.
+
+Let's show this here. Then, reassign airlines to the result of mutate.
+
+```{r}
+mutate_via_pipe_result <- airlines %>% mutate(total.flights = on.time + delayed,delayed.rate = (delayed*100)/(on.time + delayed))
+mutate_via_pipe_result
+
+airlines <- mutate_result
+```
+
+### Analysis
+
+Let's make a side-by-side barplot where we plot the delay rate by city, putting the two airlines side-by-side.
+
+```{r}
+ggplot(airlines,aes(x = City,y = delayed.rate,fill=Airline)) +
+geom_bar(stat='identity',position='dodge') + 
+ylab("Percent of flights delayed") +
+theme(axis.title.x=element_blank(),axis.text.x=element_text(angle=90,hjust=1,vjust=0.5))
+```
+
+Based on this, it seems pretty clear that Alaska airlines performs better, having a lower delay rate in every city.
+
+### Plotting the same in base R
+
+Just for fun, let's try to make a similar plot in base R.
+
+We'll have to convert the data back to wide format first. Then, use barplot function from base R.
+
+```{r}
+delayed_rates_wide <- spread(airlines[,c("Airline","City","delayed.rate")],City,delayed.rate)
+rownames(delayed_rates_wide) <- delayed_rates_wide$Airline
+delayed_rates_wide <- delayed_rates_wide[,2:ncol(delayed_rates_wide)]
+
+barplot(as.matrix(delayed_rates_wide),beside=T,las=2,ylab="Percent of flights delayed",col=c("red","blue"))
+legend("topleft",legend=rownames(delayed_rates_wide),col=c("red","blue"),pch=15,bty="n")
+```
+
+That actually wasn't so bad. The major issue here though, is that the column names end up not fitting on the page using base R with default settings.
+
+I'm sure there is a way to get them to fit better by fiddling with the margins, but in this case it's easier to just use ggplot2.
+
+### Analysis using combined data across cities
+
+In this case, the conclusion is pretty clear when looking city-by-city.
+
+But what if we didn't have the city-by-city data, but only aggregate data by airline?
+
+Use the aggregate function from base R or group_by and summarize_all from dplyr to sum delayed and on time per airline.
+
+```{r}
+aggregate_result <- aggregate(.~Airline,FUN=sum,data=airlines[,c("Airline","delayed","on.time")])
+aggregate_result
+
+summarize_result <- airlines[,c("Airline","delayed","on.time")] %>% group_by(Airline) %>% summarize_all(funs(sum))
+summarize_result
+```
+
+Now, get a delayed rate similar to how we did previously.
+
+Let's get fancy and pipe the result of summarize right into mutate, without using object summarize_result.
+
+```{r}
+airlines[,c("Airline","delayed","on.time")] %>% group_by(Airline) %>% summarize_all(funs(sum))  %>% mutate(delayed.rate = delayed*100/(delayed + on.time))
+```
+
+Interesting! If we do not separate by city, AM WEST will appear to be better in terms of delay rate.
+
+Let's make an explanatory plot to show how this might occur.
+
+Make a stacked barplot with the percent of flights coming from each city per airline.
+
+Combined with the plot above, which shows trends of delay rates by city, we may get a better sense of how this happened.
+
+```{r}
+ggplot(airlines,aes(x = Airline,y=total.flights,fill=City)) +
+geom_bar(position = "fill",stat = "identity") +
+scale_y_continuous(labels = percent_format()) +
+ylab("Percent of flights coming from each city") +
+scale_fill_manual(values=c("#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2")) #Use colorblind vector as suggested here: http://www.cookbook-r.com/Graphs/Colors_(ggplot2)/#a-colorblind-friendly-palette
+```
+
+We find that AM WEST has the majority of flights coming from Phoenix. And we saw from the first chart that Phoenix tends to be a lower-delay city regardless of airline.
+
+So if we do not separate by city, AM WEST will appear to have a lower delay rate than Alaska. Whereas if we normalize by city, we come to the correct conclusion that Alaska performs better in terms of delays.
